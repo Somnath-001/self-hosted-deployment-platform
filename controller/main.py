@@ -1,0 +1,245 @@
+from fastapi import FastAPI, Request
+import json
+import docker
+import time
+import requests
+
+app = FastAPI(title="Deployment Controller")
+
+docker_client = docker.from_env()
+
+
+@app.get("/")
+def home():
+    return {
+        "message": "Deployment Controller is running"
+    }
+
+
+@app.get("/health")
+def health():
+    return {
+        "status": "healthy"
+    }
+
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    payload = await request.json()
+
+    application = payload.get("repository")
+    version = payload.get("commit")
+
+    desired_state = {
+        "application": application,
+        "version": version
+    }
+
+    with open("desired_state.json", "w") as file:
+        json.dump(desired_state, file, indent=2)
+
+    return {
+        "message": "Desired state updated",
+        "desired_state": desired_state
+    }
+
+
+def health_check(url, retries=10, delay=2):
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, timeout=2)
+
+            if response.status_code == 200:
+                data = response.json()
+
+                if data.get("status") == "healthy":
+                    return True
+
+        except requests.exceptions.RequestException:
+            pass
+
+        time.sleep(delay)
+
+    return False
+
+
+def deploy_container(application, image, previous_image=None):
+
+    # Remove existing container
+    try:
+        old_container = docker_client.containers.get(application)
+
+        print(f"Stopping old container: {application}")
+        old_container.stop()
+
+        print(f"Removing old container: {application}")
+        old_container.remove()
+
+    except docker.errors.NotFound:
+        print("No existing container found")
+
+    # Start new container
+    print(f"Starting new container with image: {image}")
+
+    new_container = docker_client.containers.run(
+        image,
+        name=application,
+        ports={"8000/tcp": 8000},
+        detach=True
+    )
+
+    # Health check
+    print("Checking application health...")
+
+    healthy = health_check("http://localhost:8000/health")
+
+    if healthy:
+        return {
+            "container": new_container.name,
+            "image": image,
+            "status": "healthy"
+        }
+
+    # New deployment failed
+    print("New deployment is unhealthy!")
+
+    new_container.stop()
+    new_container.remove()
+
+    # Rollback
+    if previous_image:
+        print(f"Rolling back to: {previous_image}")
+
+        rollback_container = docker_client.containers.run(
+            previous_image,
+            name=application,
+            ports={"8000/tcp": 8000},
+            detach=True
+        )
+
+        rollback_healthy = health_check(
+            "http://localhost:8000/health"
+        )
+
+        if rollback_healthy:
+            return {
+                "container": rollback_container.name,
+                "image": previous_image,
+                "status": "rolled_back",
+                "reason": "New deployment failed health check"
+            }
+
+    return {
+        "container": application,
+        "image": image,
+        "status": "failed"
+    }
+
+
+@app.post("/deploy-test")
+def deploy_test():
+    return deploy_container(
+        "python-test-app",
+        "python-test-app:1.0"
+    )
+
+
+@app.get("/reconcile")
+def reconcile():
+
+    # Read desired state
+    with open("desired_state.json", "r") as file:
+        desired_state = json.load(file)
+
+    desired_application = desired_state["application"]
+    desired_version = desired_state["version"]
+
+    # Get running containers from Docker
+    containers = docker_client.containers.list()
+
+    actual_version = None
+
+    for container in containers:
+
+        if container.name == desired_application:
+
+            image_tags = container.image.tags
+
+            if image_tags:
+
+                image = image_tags[0]
+
+                if ":" in image:
+                    actual_version = image.split(":", 1)[1]
+
+    # Application is not running
+    if actual_version is None:
+
+        image = f"{desired_application}:{desired_version}"
+
+        deployment = deploy_container(
+            desired_application,
+            image
+        )
+
+        return {
+            "status": "deployed",
+            "message": "Application was not running. Desired version deployed.",
+            "desired": desired_state,
+            "deployment": deployment
+        }
+
+    # Already in sync
+    if desired_version == actual_version:
+
+        return {
+            "status": "in_sync",
+            "message": "Desired state matches actual Docker state",
+            "desired": desired_state,
+            "actual": {
+                "application": desired_application,
+                "version": actual_version
+            }
+        }
+
+    # Out of sync → deploy desired version
+    image = f"{desired_application}:{desired_version}"
+
+    previous_image = f"{desired_application}:{actual_version}"
+
+    deployment = deploy_container(
+        desired_application,
+        image,
+        previous_image
+    )
+
+    return {
+        "status": "deployed",
+        "message": "Application was out of sync. Desired version deployed.",
+        "desired": desired_state,
+        "previous": {
+            "application": desired_application,
+            "version": actual_version
+        },
+        "deployment": deployment
+    }
+
+
+@app.get("/docker-state")
+def docker_state():
+
+    containers = docker_client.containers.list()
+
+    result = []
+
+    for container in containers:
+
+        result.append({
+            "name": container.name,
+            "image": container.image.tags,
+            "status": container.status
+        })
+
+    return {
+        "running_containers": result
+    }
