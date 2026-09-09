@@ -1,0 +1,38 @@
+name: Deploy Application
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install controller dependencies
+        run: |
+          cd controller
+          pip install -r requirements.txt
+
+      - name: Validate Python code
+        run: |
+          python -m py_compile controller/main.py
+
+      - name: Notify deployment controller
+        run: |
+          curl -X POST "${{ secrets.CONTROLLER_URL }}/webhook" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "event": "push",
+              "repository": "python-test-app",
+              "commit": "${{ github.sha }}"
+            }'
