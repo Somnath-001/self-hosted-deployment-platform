@@ -19,7 +19,7 @@
                 ],
                 "properties": {
                   "username": {
-                    "type": "integer"
+                    "type": "string"
                   },
 		"password":{
 			"type":"string"
