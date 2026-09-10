@@ -3,11 +3,56 @@ import json
 import docker
 import time
 import requests
+import threading
 
 app = FastAPI(title="Deployment Controller")
 
 docker_client = docker.from_env()
 
+def reconciliation_loop():
+    while True:
+        try:
+            with open("desired_state.json", "r") as file:
+                desired_state = json.load(file)
+
+            desired_application = desired_state["application"]
+            desired_image = desired_state["image"]
+
+            containers = docker_client.containers.list()
+
+            actual_image = None
+
+            for container in containers:
+                if container.name == desired_application:
+                    image_tags = container.image.tags
+
+                    if image_tags:
+                        actual_image = image_tags[0]
+
+            if actual_image != desired_image:
+                print(
+                    f"Reconciliation: desired={desired_image}, "
+                    f"actual={actual_image}"
+                )
+
+                deploy_container(
+                    desired_application,
+                    desired_image,
+                    previous_image=actual_image
+                )
+
+            else:
+                print(
+                    f"Reconciliation: {desired_application} is in sync"
+                )
+
+        except FileNotFoundError:
+            print("No desired_state.json found")
+
+        except Exception as error:
+            print(f"Reconciliation error: {error}")
+
+        time.sleep(30)
 
 @app.get("/")
 def home():
@@ -233,3 +278,10 @@ def docker_state():
     return {
         "running_containers": result
     }
+
+reconciler_thread = threading.Thread(
+    target=reconciliation_loop,
+    daemon=True
+)
+
+reconciler_thread.start()
