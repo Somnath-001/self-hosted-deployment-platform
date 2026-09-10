@@ -7,15 +7,15 @@ app = Flask(__name__)
 def home():
     return {
         "message": "Hello from our deployment platform",
-        "version": "3.0"
+        "version": "5.0"
     }
 
 
 @app.get("/health")
 def health():
     return {
-        "status": "unhealthy",
-        "version": "4.0"
+        "status": "healthy",
+        "version": "5.0"
     }
 
 
