@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse
 import json
 import docker
 import time
@@ -8,6 +9,10 @@ import threading
 app = FastAPI(title="Deployment Controller")
 
 docker_client = docker.from_env()
+
+@app.get("/dashboard")
+def dashboard():
+    return FileResponse("../dashboard/index.html")
 
 def reconciliation_loop():
     while True:
@@ -108,6 +113,33 @@ def health_check(url, retries=10, delay=2):
 
     return False
 
+def record_release(
+    application,
+    version,
+    image,
+    status,
+    reason=None
+):
+    history_file = "deployment_history.json"
+
+    try:
+        with open(history_file, "r") as file:
+            history = json.load(file)
+    except FileNotFoundError:
+        history = {"releases": []}
+
+    release = {
+        "application": application,
+        "version": version,
+        "image": image,
+        "status": status,
+        "reason": reason
+    }
+
+    history["releases"].insert(0, release)
+
+    with open(history_file, "w") as file:
+        json.dump(history, file, indent=2)
 
 def deploy_container(application, image, previous_image=None):
 
@@ -124,9 +156,11 @@ def deploy_container(application, image, previous_image=None):
     except docker.errors.NotFound:
         print("No existing container found")
 
+    # Get Docker image
     try:
         docker_client.images.get(image)
         print(f"Image already exists locally: {image}")
+
     except docker.errors.ImageNotFound:
         print(f"Image not found locally. Pulling: {image}")
         docker_client.images.pull(image)
@@ -144,9 +178,20 @@ def deploy_container(application, image, previous_image=None):
     # Health check
     print("Checking application health...")
 
-    healthy = health_check("http://localhost:8000/health")
+    healthy = health_check(
+        "http://localhost:8000/health"
+    )
 
+    # New deployment is healthy
     if healthy:
+
+        record_release(
+            application,
+            image.split(":")[-1],
+            image,
+            "healthy"
+        )
+
         return {
             "container": new_container.name,
             "image": image,
@@ -159,8 +204,17 @@ def deploy_container(application, image, previous_image=None):
     new_container.stop()
     new_container.remove()
 
+    record_release(
+        application,
+        image.split(":")[-1],
+        image,
+        "failed",
+        "New deployment failed health check"
+    )
+
     # Rollback
     if previous_image:
+
         print(f"Rolling back to: {previous_image}")
 
         rollback_container = docker_client.containers.run(
@@ -175,6 +229,15 @@ def deploy_container(application, image, previous_image=None):
         )
 
         if rollback_healthy:
+
+            record_release(
+                application,
+                previous_image.split(":")[-1],
+                previous_image,
+                "rolled_back",
+                "New deployment failed health check"
+            )
+
             return {
                 "container": rollback_container.name,
                 "image": previous_image,
@@ -278,6 +341,73 @@ def docker_state():
     return {
         "running_containers": result
     }
+
+@app.get("/status")
+def status():
+    try:
+        with open("desired_state.json", "r") as file:
+            desired_state = json.load(file)
+    except FileNotFoundError:
+        desired_state = {}
+
+    actual_image = None
+    container_status = "not_running"
+
+    application = desired_state.get("application")
+
+    if application:
+        try:
+            container = docker_client.containers.get(application)
+            container_status = container.status
+
+            if container.image.tags:
+                actual_image = container.image.tags[0]
+
+        except docker.errors.NotFound:
+            pass
+
+    health = "unknown"
+
+    if container_status == "running":
+        try:
+            response = requests.get(
+                "http://localhost:8000/health",
+                timeout=2
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                health = data.get("status", "unknown")
+
+        except requests.exceptions.RequestException:
+            health = "unhealthy"
+
+    return {
+        "application": application,
+        "desired_version": desired_state.get("version"),
+        "desired_image": desired_state.get("image"),
+        "actual_image": actual_image,
+        "container_status": container_status,
+        "health": health,
+        "in_sync": (
+            desired_state.get("image") == actual_image
+            and actual_image is not None
+        )
+    }
+
+@app.get("/history")
+def deployment_history():
+
+    try:
+        with open("deployment_history.json", "r") as file:
+            history = json.load(file)
+
+    except FileNotFoundError:
+        history = {
+            "releases": []
+        }
+
+    return history
 
 reconciler_thread = threading.Thread(
     target=reconciliation_loop,

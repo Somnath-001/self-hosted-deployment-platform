@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Deployment Platform</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            background: #f5f5f5;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: auto;
+        }
+
+        .card {
+            background: white;
+            padding: 25px;
+            margin-top: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .healthy {
+            color: green;
+            font-weight: bold;
+        }
+
+        .unhealthy {
+            color: red;
+            font-weight: bold;
+        }
+
+        .label {
+            font-weight: bold;
+        }
+
+        code {
+            word-break: break-all;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="container">
+
+    <h1>🚀 Self-Hosted Deployment Platform</h1>
+
+    <div class="card">
+
+        <h2 id="application">Loading...</h2>
+
+        <p>
+            <span class="label">Health:</span>
+            <span id="health">Loading...</span>
+        </p>
+
+        <p>
+            <span class="label">Container:</span>
+            <span id="container">Loading...</span>
+        </p>
+
+        <p>
+            <span class="label">Desired Version:</span>
+            <span id="version">Loading...</span>
+        </p>
+
+        <p>
+            <span class="label">Desired Image:</span><br>
+            <code id="desired-image">Loading...</code>
+        </p>
+
+        <p>
+            <span class="label">Actual Image:</span><br>
+            <code id="actual-image">Loading...</code>
+        </p>
+
+        <p>
+            <span class="label">Deployment State:</span>
+            <span id="sync">Loading...</span>
+        </p>
+
+    </div>
+
+</div>
+
+<script>
+
+async function loadStatus() {
+
+    try {
+
+        const response = await fetch("/status");
+
+        const data = await response.json();
+
+        document.getElementById("application").textContent =
+            data.application || "No application";
+
+        document.getElementById("health").textContent =
+            data.health;
+
+        document.getElementById("health").className =
+            data.health === "healthy"
+            ? "healthy"
+            : "unhealthy";
+
+        document.getElementById("container").textContent =
+            data.container_status;
+
+        document.getElementById("version").textContent =
+            data.desired_version;
+
+        document.getElementById("desired-image").textContent =
+            data.desired_image;
+
+        document.getElementById("actual-image").textContent =
+            data.actual_image;
+
+        document.getElementById("sync").textContent =
+            data.in_sync
+            ? "🟢 In Sync"
+            : "🔴 Out of Sync";
+
+    } catch (error) {
+
+        console.error(error);
+
+    }
+}
+
+async function loadHistory() {
+
+    try {
+
+        const response = await fetch("/history");
+
+        const data = await response.json();
+
+        const historyElement =
+            document.getElementById("history");
+
+        if (data.releases.length === 0) {
+
+            historyElement.textContent =
+                "No releases recorded.";
+
+            return;
+        }
+
+        historyElement.innerHTML = "";
+
+        data.releases.forEach((release) => {
+
+            const releaseElement =
+                document.createElement("div");
+
+            releaseElement.className = "release";
+
+            releaseElement.innerHTML = `
+                <p>
+                    <strong>Version:</strong>
+                    ${release.version}
+                </p>
+
+                <p>
+                    <strong>Status:</strong>
+                    ${release.status}
+                </p>
+
+                <p>
+                    <strong>Image:</strong>
+                    <code>${release.image}</code>
+                </p>
+
+                <p>
+                    <strong>Reason:</strong>
+                    ${release.reason || "None"}
+                </p>
+
+                <hr>
+            `;
+
+            historyElement.appendChild(releaseElement);
+        });
+
+    } catch (error) {
+
+        console.error(error);
+
+        document.getElementById("history").textContent =
+            "Unable to load release history.";
+    }
+}
+
+loadStatus();
+loadHistory();
+
+setInterval(loadStatus, 5000);
+setInterval(loadHistory, 5000);
+
+</script>
+<div class="card">
+
+    <h2>Release History</h2>
+
+    <div id="history">
+        Loading release history...
+    </div>
+
+</div>
+</body>
+</html>
+

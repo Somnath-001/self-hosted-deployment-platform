@@ -1,0 +1,18 @@
+{
+  "releases": [
+    {
+      "application": "python-test-app",
+      "version": "06a77950ccba34e7119da8400e1470028a6fbbf8",
+      "image": "ghcr.io/somnath-001/python-test-app:06a77950ccba34e7119da8400e1470028a6fbbf8",
+      "status": "healthy",
+      "reason": null
+    },
+    {
+      "application": "python-test-app",
+      "version": "1.0",
+      "image": "python-test-app:1.0",
+      "status": "healthy",
+      "reason": null
+    }
+  ]
+}
