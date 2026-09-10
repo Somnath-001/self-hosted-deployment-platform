@@ -29,10 +29,12 @@ async def webhook(request: Request):
 
     application = payload.get("repository")
     version = payload.get("commit")
+    image = payload.get("image")
 
     desired_state = {
         "application": application,
-        "version": version
+        "version": version,
+        "image": image
     }
 
     with open("desired_state.json", "w") as file:
@@ -42,7 +44,6 @@ async def webhook(request: Request):
         "message": "Desired state updated",
         "desired_state": desired_state
     }
-
 
 def health_check(url, retries=10, delay=2):
     for attempt in range(retries):
@@ -77,6 +78,13 @@ def deploy_container(application, image, previous_image=None):
 
     except docker.errors.NotFound:
         print("No existing container found")
+
+    try:
+        docker_client.images.get(image)
+        print(f"Image already exists locally: {image}")
+    except docker.errors.ImageNotFound:
+        print(f"Image not found locally. Pulling: {image}")
+        docker_client.images.pull(image)
 
     # Start new container
     print(f"Starting new container with image: {image}")
@@ -146,84 +154,66 @@ def deploy_test():
 
 @app.get("/reconcile")
 def reconcile():
-
-    # Read desired state
     with open("desired_state.json", "r") as file:
         desired_state = json.load(file)
 
     desired_application = desired_state["application"]
     desired_version = desired_state["version"]
+    desired_image = desired_state["image"]
 
-    # Get running containers from Docker
     containers = docker_client.containers.list()
-
-    actual_version = None
+    actual_image = None
 
     for container in containers:
-
         if container.name == desired_application:
-
             image_tags = container.image.tags
 
             if image_tags:
+                actual_image = image_tags[0]
 
-                image = image_tags[0]
-
-                if ":" in image:
-                    actual_version = image.split(":", 1)[1]
-
-    # Application is not running
-    if actual_version is None:
-
-        image = f"{desired_application}:{desired_version}"
-
+    # Application is not currently running
+    if actual_image is None:
         deployment = deploy_container(
             desired_application,
-            image
+            desired_image
         )
 
         return {
             "status": "deployed",
-            "message": "Application was not running. Desired version deployed.",
+            "message": "Application was not running. Desired image deployed.",
             "desired": desired_state,
             "deployment": deployment
         }
 
-    # Already in sync
-    if desired_version == actual_version:
-
+    # Desired image is already running
+    if desired_image == actual_image:
         return {
             "status": "in_sync",
-            "message": "Desired state matches actual Docker state",
+            "message": "Desired image matches actual Docker state.",
             "desired": desired_state,
             "actual": {
                 "application": desired_application,
-                "version": actual_version
+                "image": actual_image
             }
         }
 
-    # Out of sync → deploy desired version
-    image = f"{desired_application}:{desired_version}"
-
-    previous_image = f"{desired_application}:{actual_version}"
-
+    # Application is running, but with a different image
     deployment = deploy_container(
         desired_application,
-        image,
-        previous_image
+        desired_image,
+        previous_image=actual_image
     )
 
     return {
         "status": "deployed",
-        "message": "Application was out of sync. Desired version deployed.",
+        "message": "Application was out of sync. Desired image deployed.",
         "desired": desired_state,
         "previous": {
             "application": desired_application,
-            "version": actual_version
+            "image": actual_image
         },
         "deployment": deployment
     }
-
 
 @app.get("/docker-state")
 def docker_state():
