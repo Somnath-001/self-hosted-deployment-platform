@@ -211,7 +211,10 @@ def record_log(application, event, status, message=None):
     with open(log_file, "w") as file:
         json.dump(logs, file, indent=2)
 
-def get_application_port(application):
+def get_application_port(application, config=None):
+    if config and config.get("port"):
+        return int(config["port"])
+
     ports = {
         "python-test-app": 8000,
         "node-test-app": 8001
@@ -219,10 +222,60 @@ def get_application_port(application):
 
     return ports.get(application, 8000)
 
+def get_container_config(container):
+    environment = {}
 
-def deploy_container(application, image, previous_image=None):
+    for item in container.attrs["Config"].get("Env", []):
+        if "=" in item:
+            key, value = item.split("=", 1)
 
-    port = get_application_port(application)
+            # Ignore standard image variables.
+            if key not in [
+                "PATH",
+                "LANG",
+                "GPG_KEY",
+                "PYTHON_VERSION",
+                "PYTHON_SHA256",
+                "NODE_VERSION",
+                "YARN_VERSION"
+            ]:
+                environment[key] = value
+
+    port = 8000
+
+    ports = container.attrs["NetworkSettings"].get("Ports", {})
+    port_bindings = ports.get("8000/tcp")
+
+    if port_bindings:
+        port = int(port_bindings[0]["HostPort"])
+
+    return {
+        "port": port,
+        "environment": environment
+    }
+
+def deploy_container(
+    application,
+    image,
+    previous_image=None,
+    config=None,
+    previous_config=None
+):
+    config = config or {}
+    previous_config = previous_config or config
+
+    port = get_application_port(application, config)
+    environment = config.get("environment", {})
+
+    previous_port = get_application_port(
+        application,
+        previous_config
+    )
+    previous_environment = previous_config.get(
+        "environment",
+        {}
+    )
+
     health_url = f"http://localhost:{port}/health"
 
     record_log(
@@ -248,6 +301,7 @@ def deploy_container(application, image, previous_image=None):
     # Get Docker image
     try:
         docker_client.images.get(image)
+
         print(f"Image already exists locally: {image}")
 
         record_log(
@@ -258,6 +312,7 @@ def deploy_container(application, image, previous_image=None):
         )
 
     except docker.errors.ImageNotFound:
+
         print(f"Image not found locally. Pulling: {image}")
 
         record_log(
@@ -284,6 +339,7 @@ def deploy_container(application, image, previous_image=None):
         image,
         name=application,
         ports={"8000/tcp": port},
+        environment=environment,
         detach=True
     )
 
@@ -334,14 +390,29 @@ def deploy_container(application, image, previous_image=None):
             "container": new_container.name,
             "image": image,
             "port": port,
+            "environment": environment,
             "status": "healthy"
         }
 
     # New deployment failed
     print("New deployment is unhealthy!")
 
+    record_log(
+        application,
+        "health_check",
+        "failed",
+        "New deployment failed health check"
+    )
+
     new_container.stop()
     new_container.remove()
+
+    record_log(
+        application,
+        "deployment_failed",
+        "failed",
+        "New deployment failed health check"
+    )
 
     record_release(
         application,
@@ -356,16 +427,37 @@ def deploy_container(application, image, previous_image=None):
 
         print(f"Rolling back to: {previous_image}")
 
+        record_log(
+            application,
+            "rollback_started",
+            "started",
+            f"Rolling back to {previous_image}"
+        )
+
+        rollback_health_url = (
+            f"http://localhost:{previous_port}/health"
+        )
+
         rollback_container = docker_client.containers.run(
             previous_image,
             name=application,
-            ports={"8000/tcp": port},
+            ports={"8000/tcp": previous_port},
+            environment=previous_environment,
             detach=True
         )
 
-        rollback_healthy = health_check(health_url)
+        rollback_healthy = health_check(
+            rollback_health_url
+        )
 
         if rollback_healthy:
+
+            record_log(
+                application,
+                "rollback_completed",
+                "success",
+                f"Rollback successful to {previous_image}"
+            )
 
             record_release(
                 application,
@@ -378,14 +470,26 @@ def deploy_container(application, image, previous_image=None):
             return {
                 "container": rollback_container.name,
                 "image": previous_image,
-                "port": port,
+                "port": previous_port,
+                "environment": previous_environment,
                 "status": "rolled_back"
             }
+
+        record_log(
+            application,
+            "rollback_failed",
+            "failed",
+            "Previous release also failed health check"
+        )
+
+        rollback_container.stop()
+        rollback_container.remove()
 
     return {
         "container": application,
         "image": image,
         "port": port,
+        "environment": environment,
         "status": "failed"
     }
 
@@ -446,7 +550,8 @@ def reconcile():
 
             deployment = deploy_container(
                 application,
-                desired_image
+                desired_image,
+                config= config
             )
 
             results.append({
@@ -467,10 +572,14 @@ def reconcile():
         # Running different image
         else:
 
+            previous_config = get_container_config(container)
+
             deployment = deploy_container(
                 application,
                 desired_image,
-                previous_image=actual_image
+                previous_image=actual_image,
+                config=config,
+                previous_config=previous_config
             )
 
             results.append({
@@ -526,12 +635,42 @@ def start_application(application: str):
 @app.post("/applications/{application}/restart")
 def restart_application(application: str):
     try:
+        with open("desired_state.json", "r") as file:
+            desired_state = json.load(file)
+
+        config = desired_state.get("applications", {}).get(application)
+
+        if not config:
+            return {
+                "application": application,
+                "status": "error",
+                "message": "Application configuration not found"
+            }
+
+        image = config.get("image")
+
+        if not image:
+            return {
+                "application": application,
+                "status": "error",
+                "message": "Application image not found"
+            }
+
         container = docker_client.containers.get(application)
-        container.restart()
+
+        container.stop()
+        container.remove()
+
+        deployment = deploy_container(
+            application,
+            image,
+            config=config
+        )
 
         return {
             "application": application,
-            "status": "restarted"
+            "status": "restarted",
+            "deployment": deployment
         }
 
     except docker.errors.NotFound:
@@ -541,6 +680,12 @@ def restart_application(application: str):
             "message": "Application container not found"
         }
 
+    except Exception as e:
+        return {
+            "application": application,
+            "status": "error",
+            "message": str(e)
+        }
 
 @app.delete("/applications/{application}")
 def delete_application(application: str):
