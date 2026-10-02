@@ -3,3 +3,8 @@ __pycache__/
 *.py[cod]
 venv/
 .env
+# Controller runtime/generated files
+controller/__pycache__/
+controller/*.backup
+controller/deployment_history.json
+controller/deployment_logs.json

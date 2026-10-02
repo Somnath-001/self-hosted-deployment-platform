@@ -1,4 +1,22 @@
 {
-  "application": "python-test-app",
-  "version": "4.0"
+  "applications": {
+    "python-test-app": {
+      "version": "06a77950ccba34e7119da8400e1470028a6fbbf8",
+      "image": "ghcr.io/somnath-001/python-test-app:06a77950ccba34e7119da8400e1470028a6fbbf8",
+      "port": 8000,
+      "environment": {
+        "APP_ENV": "production",
+        "APP_NAME": "python-test-app"
+      }
+    },
+    "node-test-app": {
+      "version": "1.0",
+      "image": "node-test-app:1.0",
+      "port": 8001,
+      "environment": {
+        "APP_ENV": "production",
+        "APP_NAME": "node-test-app"
+      }
+    }
+  }
 }
